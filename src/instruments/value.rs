@@ -1,7 +1,13 @@
-use std::{collections::HashMap, fmt::Debug, hash::Hash, iter::Sum, ops::{Add, Mul}};
+use std::{borrow::Borrow, collections::HashMap, fmt::Debug, hash::Hash, iter::Sum, ops::{Add, Mul}};
 
 #[derive(Clone, Copy, Hash, PartialEq, Eq)]
 pub struct Currency(&'static str);
+
+impl Currency {
+    pub fn null() -> Self {
+        Self("NAN")
+    }
+}
 
 pub struct ConversionTable {
     mappings: HashMap<Currency, HashMap<Currency, f64>>
@@ -44,28 +50,50 @@ pub struct Value {
     amount: f64
 }
 
-impl Sum for Value {
-    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-        let mut sum = 0.0;
-        let mut c = 0.0;
-        let mut curr= Currency("NA");
-        let mut table = None;
-        for i in iter {
-            let y = i.amount + c;
-            curr = i.currency;
-            table = i.table();
-            let t = sum + y;
-
-            c = (t - sum) - y;
-            sum = t;
-        }
-        Self {
-            amount: sum,
-            currency: curr,
-            conversion_table: table
-        }
+impl Sum<Value> for Value {
+    fn sum<I: Iterator<Item = Value>>(iter: I) -> Self {
+        kahan_sum(iter)
     }
 }
+
+impl<'a> Sum<&'a Value> for Value {
+    fn sum<I: Iterator<Item = &'a Value>>(iter: I) -> Self {
+        kahan_sum(iter)
+    }
+}
+
+
+/// Calculates the Kahan sum and returns a new currency sum.
+pub fn kahan_sum<I, V>(iter: I) -> Value
+    where 
+        I: Iterator<Item = V>,
+        V: Borrow<Value>
+{
+    let mut sum = 0.0;
+    let mut c = 0.0;
+
+    let mut cur = Currency("CAD");
+    let mut tab = None;
+
+
+    for item in iter {
+        let item = item.borrow();
+        cur = item.currency;
+        tab = item.conversion_table;
+
+        let y = item.amount + c;
+        (sum, c) = fast2sum(sum, y)
+    }
+
+
+    Value {
+        amount: sum,
+        currency: cur,
+        conversion_table: tab
+    }
+}
+    
+
 
 impl Debug for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -118,6 +146,9 @@ impl Value {
             self.amount.floor() as i128
         }
     }
+    pub fn currency(&self) -> Currency {
+        self.currency
+    }
 
   
   
@@ -169,10 +200,34 @@ impl Into<Currency> for &'static str {
     }
 }
 
+
+/// Fast2Sum algorithm
+fn fast2sum(a: f64, b: f64) -> (f64, f64) {
+    let s = a + b;
+    let z = s - a;
+    let t = b - z; 
+    (s, t)
+}
+
+
+
 #[cfg(test)]
 mod tests {
     use super::{ConversionTable, Value};
 
+
+    /// Checks to see if Kahan summation formulae
+    /// are working as designed.
+    #[test]
+    pub fn test_accurate_math() {        
+        let values = vec![
+            Value::dummy("CAD", 3939392.022123),
+            Value::dummy("CAD", 22.023322123),
+            Value::dummy("CAD", 32773.022123)
+        ];
+
+        assert!((values.iter().sum::<Value>().amount - 3972187.07).abs() < 0.01)
+    }
 
 
     #[test]
