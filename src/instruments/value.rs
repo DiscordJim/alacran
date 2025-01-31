@@ -1,52 +1,39 @@
-use std::{borrow::Borrow, collections::HashMap, fmt::Debug, hash::Hash, iter::Sum, ops::{Add, Mul}};
+use std::{borrow::Borrow, collections::HashMap, fmt::Debug, hash::Hash, iter::Sum, ops::{Add, Mul}, sync::RwLock};
 
-#[derive(Clone, Copy, Hash, PartialEq, Eq)]
-pub struct Currency(&'static str);
+use once_cell::sync::Lazy;
+
+use super::convert::{ConversionTable, CURRENCY_EXCHANGE};
+
+
+
+
+#[derive(Clone, Copy, Hash, PartialEq, Eq, Debug)]
+pub struct Currency(Option<&'static str>);
 
 impl Currency {
     pub fn null() -> Self {
-        Self("NAN")
+        Self(None)
+    }
+    pub fn new(currency: &'static str) -> Self {
+        Self(Some(currency))
+    }
+    pub fn is_null(&self) -> bool {
+        self.0.is_none()
+    }
+    pub fn name(&self) -> &'static str {
+        match self.0 {
+            None => "NaN",
+            Some(a) => a
+        }
     }
 }
 
-pub struct ConversionTable {
-    mappings: HashMap<Currency, HashMap<Currency, f64>>
-}
 
-impl ConversionTable {
-    pub fn new() -> Self {
-        Self {
-            mappings: HashMap::new()
-        }
-    }
-    pub fn add_conversion(&mut self, source: impl Into<Currency>, target: impl Into<Currency>, factor: f64) {
-        let source = source.into();
-        let target = target.into();
-        if !self.mappings.contains_key(&source) {
-            self.mappings.insert(source, HashMap::new());
-        }
-        if !self.mappings.contains_key(&target) {
-            self.mappings.insert(target, HashMap::new());
-        }
-        self.mappings.get_mut(&source).unwrap().insert(target, factor);
-        self.mappings.get_mut(&target).unwrap().insert(source,  1.0 /factor);
-    }
-    pub fn convert(&'static self, value: Value, target: Currency) -> Option<Value> {
-        Some(Value {
-            amount: self.mappings.get(&value.currency)?.get(&target)? * value.amount,
-            currency: target,
-            conversion_table: Some(&self)
-        })
-    }
-    pub fn free(self) -> &'static Self {
-        Box::leak(Box::new(self))
-    }
-}
 
 #[derive(Clone)]
 pub struct Value {
     currency: Currency,
-    conversion_table: Option<&'static ConversionTable>,
+    // conversion_table: Option<&'static ConversionTable>,
     amount: f64
 }
 
@@ -72,14 +59,12 @@ pub fn kahan_sum<I, V>(iter: I) -> Value
     let mut sum = 0.0;
     let mut c = 0.0;
 
-    let mut cur = Currency("CAD");
-    let mut tab = None;
-
+    let mut cur = Currency::new("CAD");
 
     for item in iter {
         let item = item.borrow();
         cur = item.currency;
-        tab = item.conversion_table;
+
 
         let y = item.amount + c;
         (sum, c) = fast2sum(sum, y)
@@ -89,7 +74,6 @@ pub fn kahan_sum<I, V>(iter: I) -> Value
     Value {
         amount: sum,
         currency: cur,
-        conversion_table: tab
     }
 }
     
@@ -105,9 +89,9 @@ impl Debug for Value {
         let cents= ((self.amount.abs() - (main as f64)) * 100.0).floor() as usize;
 
         if self.amount < 0.0 {
-            write!(f, "-{principal}.{cents}{}", self.currency.0)
+            write!(f, "-{principal}.{cents}{}", self.currency.name())
         } else {
-            write!(f, "{principal}.{cents}{}", self.currency.0)
+            write!(f, "{principal}.{cents}{}", self.currency.name())
         }
         
     }
@@ -116,27 +100,26 @@ impl Debug for Value {
 
 impl Value {
     pub fn dummy<C: Into<Currency>, F: Into<f64>>(cur: C, amount: F) -> Self {
-        Self::new(cur, amount, ConversionTable::new().free())
+        Self::new(cur, amount)
     }
-    pub fn new<C: Into<Currency>, F: Into<f64>>(cur: C, amount: F, table: &'static ConversionTable) -> Self {
+    pub fn new<C: Into<Currency>, F: Into<f64>>(cur: C, amount: F) -> Self {
         Self {
             amount: amount.into(),
             currency: cur.into(),
-            conversion_table: Some(table)
         }
     }
-    pub fn zero<C: Into<Currency>>(cur: C, table: &'static ConversionTable) -> Self {
-        Self::new(cur, 0.0, table)
+    pub fn zero<C: Into<Currency>>() -> Self {
+        Self::new(Currency::null(), 0.0)
     }
     pub fn negate(&self) -> Self {
         Self {
             amount: self.amount * -1.0,
-            conversion_table: self.conversion_table,
             currency: self.currency
         }
     }
-    pub fn table(&self) -> Option<&'static ConversionTable> {
-        self.conversion_table
+
+    pub fn amount(&self) -> f64 {
+        self.amount
     }
 
     pub fn non_decimal(&self) -> i128 {
@@ -159,7 +142,6 @@ impl Mul<f64> for Value {
     fn mul(self, rhs: f64) -> Self::Output {
         Self {
             amount: self.amount * rhs,
-            conversion_table: self.conversion_table,
             currency: self.currency
         }
     }    
@@ -170,7 +152,6 @@ impl Mul<f64> for &Value {
     fn mul(self, rhs: f64) -> Self::Output {
         Value {
             amount: self.amount * rhs,
-            conversion_table: self.conversion_table,
             currency: self.currency
         }
     }    
@@ -182,11 +163,13 @@ impl Add<Value> for Value {
         if self.currency == rhs.currency {
             Self {
                 amount: self.amount + rhs.amount,
-                conversion_table: self.conversion_table,
                 currency: rhs.currency
             }
         } else {
-            self.conversion_table.unwrap().convert(rhs, self.currency).unwrap() + self
+            // println!("yes {:?}", CURRENCY_EXCHANGE.convert(rhs.clone(), self.currency));
+            // CURRENCY_EXCHANGE.convert(rhs, self.currency).unwrap() + self
+         
+            CURRENCY_EXCHANGE.convert(rhs, self.currency).unwrap() + self
         }
     }
 }
@@ -196,7 +179,7 @@ impl Add<Value> for Value {
 
 impl Into<Currency> for &'static str {
     fn into(self) -> Currency {
-        Currency(self)
+        Currency::new(self)
     }
 }
 
@@ -213,6 +196,9 @@ fn fast2sum(a: f64, b: f64) -> (f64, f64) {
 
 #[cfg(test)]
 mod tests {
+  
+    use crate::instruments::{convert::CURRENCY_EXCHANGE, value::Currency};
+
     use super::{ConversionTable, Value};
 
 
@@ -232,12 +218,14 @@ mod tests {
 
     #[test]
     pub fn test_conversion() {
-        let mut table = ConversionTable::new();
-        table.add_conversion("CAD", "COP", 2911.98);
-        let table = table.free();
 
-        let bob = Value::new("CAD", 28.0, table);
-        let alice = Value::new("COP", 600000.0, table);
+        CURRENCY_EXCHANGE.add_conversion("CAD", "COP", 2911.98);
+
+       
+        let bob = Value::new("CAD", 28.0);
+        let alice = Value::new("COP", 600000.0);
+
+        // panic!("yelllo {:?}", CURRENCY_EXCHANGE.convert(bob, Currency("COP")));
 
 
         let total = bob + alice;

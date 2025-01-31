@@ -1,9 +1,5 @@
 use chrono::{DateTime, TimeDelta, Utc};
-
-use super::{
-    value::{Currency, Value},
-    Assesible,
-};
+use super::Assesible;
 
 /// Adds an element of risk to an [Assesible] item,
 /// the exact function of these depends heavily on the
@@ -35,9 +31,12 @@ impl<A: Assesible> Assesible for Risk<A> {
                     return asset.assess(time);
                 }
 
-                let loss = (time - *starting).num_nanoseconds().unwrap() as f64
+                // Count how many periods of interest have passed
+                let periods = (time - *starting).num_nanoseconds().unwrap() as f64
                     / period.num_nanoseconds().unwrap() as f64;
-                let loss_factor = (1.0 - *percent).powf(loss);
+                
+                // Count the loss multiplier to multiply the underlying value by.
+                let loss_factor = (1.0 - *percent).powf(periods);
 
                 asset.assess(time) * loss_factor
             }
@@ -55,7 +54,7 @@ impl<A: Assesible> Assesible for Risk<A> {
 mod tests {
     use chrono::{TimeDelta, TimeZone, Utc};
 
-    use crate::instruments::{book::Item, risk::Risk, value::Value, Assesible};
+    use crate::instruments::{item::Item, risk::Risk, value::Value, Assesible};
 
     #[test]
     pub fn test_always_fail() {
