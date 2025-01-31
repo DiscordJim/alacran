@@ -30,8 +30,11 @@ impl<A: Assesible> Assesible for Risk<A> {
                 period,
                 starting,
             } => {
+                if *starting > time {
+                    // The interest has not started going down yet.
+                    return asset.assess(time);
+                }
 
-             
                 let loss = (time - *starting).num_nanoseconds().unwrap() as f64
                     / period.num_nanoseconds().unwrap() as f64;
                 let loss_factor = (1.0 - *percent).powf(loss);
@@ -72,13 +75,27 @@ mod tests {
     }
 
     /// Checks that no interest is being applied before start.
-    /// 
-    /// This may
+    ///
+    /// This may be useful for stuff like student loans where they only
+    /// start generating interest once you are out of school.
     #[test]
     pub fn test_no_interest_before_start() {
+        let interest_start = Utc.with_ymd_and_hms(2002, 1, 1, 0, 0, 0).unwrap();
 
+        // Add a family car that devalues 10% about once a year.
+        let family_car = Risk::LosePercentOverTime {
+            asset: Item::fixed(Value::dummy("CAD", 50_000.00), interest_start),
+            percent: 0.10,
+            period: TimeDelta::days(365),
+            starting: interest_start,
+        };
 
-        let interest_start
+        assert_eq!(
+            family_car
+                .assess(Utc.with_ymd_and_hms(2000, 1, 1, 0, 0, 0).unwrap())
+                .non_decimal(),
+            50_000
+        );
     }
 
     #[test]
